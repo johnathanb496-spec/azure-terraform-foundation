@@ -1,23 +1,42 @@
 # azure-terraform-foundation
-Terraform on Azure: a resource group, network, and security built from code. Deploy and destroy with no portal steps.
+Terraform on Azure: a resource group, network, and security built from code, growing into a hub-and-spoke design for a fictional multi-site business. Deploy and destroy with no portal steps.
 
 ## Business problem
-An online guitar school needs infrastructure that protects student data while having public content, and cannot exceed a budget of $20/month.
 
-- **Public:** school info, lesson offerings, and free sample videos anyone can watch.
-- **Members only:** lesson videos students can watch after they sign up.
-- **Sensitive:** student names, contact info, email, lesson notes, and assigned homework. Many students are minors.
+An online guitar school with two in-person studio locations needs Azure
+infrastructure that protects student data, many of whose owners are minors,
+while still serving public and members-only content, within a $500/month budget.
+
+| Data | Examples | How it's protected |
+|---|---|---|
+| Public | School info, offerings, free samples | Public storage, no restrictions |
+| Members only | Lesson videos | Private container, short-lived access tokens issued by the app |
+| Sensitive | Names, contact info, lesson notes, homework | Public access off, reachable only through a private endpoint |
+
+Studio staff reach student records over site-to-site VPN into a hub network.
+Traffic passes through Azure Firewall before it reaches the records network.
+
+Out of scope: the student portal, student sign-in, and payments.
+
+**Cost:** The $500/month budget is the cost of running this design around
+the clock. The lab deploys and destroys everything each session, so actual
+spend is a few dollars per session.
 
 This is a hypothetical scenario. No real student data is in this repo.
 
 ## Roadmap (planned, not built yet)
 - **Remote state in Azure Storage:** Terraform's record of what exists lives in one shared, locked place instead of on one laptop, so the pipeline and I work from the same copy.
-- **Hub-and-spoke network via a reusable module:** keeps the student records system separate from everything else, with a hub for shared services.
-- **Private storage for student records:** public internet access is turned off, and the storage is reachable only through a private endpoint inside the network.
+- **Hub-and-spoke network via a reusable module:** one module, called once per network, builds a hub for shared services and a spoke for student records. The current VNet becomes the records spoke.
+- **Private storage for student records:** public internet access is turned off, and the storage is reachable only through a private endpoint inside the records spoke.
+- **Members-only videos protected by identity:** a private container that members reach with short-lived access tokens, not by network location, because members watch from home.
 - **CI/CD pipeline (GitHub Actions with OIDC):** every change is checked and planned automatically before it's applied, with no passwords stored anywhere.
+- **Monitoring:** access logs from the records storage go to Log Analytics, with a query that shows who touched student records.
+- **Site-to-site VPN for the two studios:** a VPN gateway in the hub, one connection per studio.
+- **Azure Firewall Basic with route tables:** studio traffic to student records is forced through one rule set and one log before it reaches the records spoke.
 
 ## Network: VNet and subnets
-One VNet (10.0.0.0/24) with two /26 subnets split by job: app (.0–.63) and management (.64–.127), leaving half the space free.
+One VNet (10.0.0.0/24) with two /26 subnets split by job: app (.0–.63) and management (.64–.127), leaving half the space free. This VNet becomes the records spoke once the hub is built.
+
 Terraform builds the RG, then the VNet, then both subnets in parallel. The order comes from references, not anything I wrote.
 
 What broke: both subnets got the same name, so the second silently overwrote the first. The plan showed it; I didn't read it.
@@ -64,5 +83,5 @@ No portal steps are required.
 ## What I'd change at scale
 
 - **Student sign-in with MFA:** Left out because it's application-layer authentication. It belongs to the student portal, not to the infrastructure or the CI/CD pipeline. It comes in when the portal gets built.
-- **Azure Firewall:** Left out on cost (about $912/month against a $20 budget). It comes in if the school grows enough that a contract or audit requires central inspection and logging of network traffic.
-- **Multiple environments (dev, staging, prod):** Left out because a second copy doubles the infrastructure to run and maintain. It comes in once real students depend on the system and a broken change would cost the school. The network module will be built to be called more than once, so the same code can deploy each environment with different variable values.
+- **Azure Firewall Premium:** The design uses Firewall Basic, which filters and logs traffic but doesn't inspect inside encrypted connections. Premium adds intrusion detection and TLS inspection at roughly $1,278/month. It comes in if an audit or contract requires inspecting encrypted traffic.
+- **Multiple environments (dev, staging, prod):** Left out because a second copy doubles the infrastructure to run and maintain. It comes in once real students depend on the system and a broken change would cost the school. The network module is built to be called more than once, so the same code can deploy each environment with different variable values.
