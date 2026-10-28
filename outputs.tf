@@ -4,26 +4,11 @@ output "resource_group_id" {
 }
 
 output "vnet_id" {
-  value       = azurerm_virtual_network.lab.id
+  value       = module.records_spoke.vnet_id
   description = "VNet ID"
 }
 
-output "subnet_app_id" {
-  value       = azurerm_subnet.app.id
-  description = "App subnet ID"
-}
-
-output "subnet_management_id" {
-  value       = azurerm_subnet.management.id
-  description = "Management subnet ID"
-}
-
-output "nsg_app_id" {
-  value       = azurerm_network_security_group.app.id
-  description = "App NSG ID"
-}
-
-output "nsg_management_id" {
-  value       = azurerm_network_security_group.management.id
-  description = "Management NSG ID"
+output "subnet_ids" {
+  value       = module.records_spoke.subnet_ids
+  description = "Subnet IDs"
 }
