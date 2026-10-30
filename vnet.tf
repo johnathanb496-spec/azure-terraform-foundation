@@ -1,6 +1,6 @@
 locals {
   vnets = {
-        records = {
+    records = {
       name          = "vnet-records-${var.environment}-${var.location}"
       address_space = ["10.0.0.0/24"]
       subnets = {
