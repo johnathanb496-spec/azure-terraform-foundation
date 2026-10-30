@@ -26,10 +26,10 @@ This is a hypothetical scenario. No real student data is in this repo.
 
 ## Built so far
 - **Remote state in Azure Storage:** Terraform's record of what exists lives in one shared, locked place instead of on one laptop. The storage account is created by its own stack in `bootstrap/`, so destroying the main stack never deletes its own state.
-- **Hub and records spoke via a reusable module:** one network module, called once per VNet with `for_each`, builds the hub and the records spoke. Peering between them is next.
+- **Hub and records spoke via a reusable module:** one network module, called once per VNet with `for_each`, builds the hub and the records spoke.
+- **Hub-to-spoke peering:** the hub and records spoke are connected in both directions, one peering resource per side.
 
 ## Roadmap (planned, not built yet)
-- **Hub-to-spoke peering:** the hub and records spoke connected in both directions.
 - **NSG on the records subnet:** the records subnet gets its own network security group.
 - **Private storage for student records:** public internet access is turned off, and the storage is reachable only through a private endpoint inside the records spoke.
 - **Members-only videos protected by identity:** a private container that members reach with short-lived access tokens, not by network location, because members watch from home.
@@ -46,16 +46,23 @@ A reusable network module (`modules/network/`) creates one VNet plus every subne
 | Records spoke | 10.0.0.0/24 | snet-studentrecords-endpoint (10.0.0.0/27) |
 | Hub | 10.1.0.0/24 | AzureFirewallSubnet (10.1.0.0/26), AzureFirewallManagementSubnet (10.1.0.64/26), GatewaySubnet (10.1.0.128/27) |
 
-Every VNet is a /24, and subnets are carved out of it. The hub subnets use Azure's reserved names exactly, because Azure finds the firewall and gateway subnets by name. They skip my naming convention on purpose. No gateway, firewall, or peering is deployed yet.
+Every VNet is a /24, and subnets are carved out of it. The hub subnets use Azure's reserved names exactly, because Azure finds the firewall and gateway subnets by name. They skip my naming convention on purpose. No gateway or firewall is deployed yet.
 
-Terraform builds the resource group first, then the VNets, then the subnets. The order comes from references between resources, not from anything I wrote.
+### Peering
+`peerings.tf` connects the hub and the records spoke with one `azurerm_virtual_network_peering` per direction: hub → records and records → hub. Azure marks a peering Connected only when both sides exist. With one side, nothing flows.
+
+Peering is not transitive. A studio peered to the hub couldn't reach records through it, which is why the hub will get a VPN gateway and firewall instead. Gateway transit and forwarded traffic are off until those are built.
+
+Each peering references the module's `vnet_name` and `vnet_id` outputs, and the resource group by reference (`azurerm_resource_group.lab.name`), not as a typed-out string. A string gives the same name but tells Terraform nothing about what must exist first.
+
+Terraform builds the resource group first, then the VNets, then the subnets and peerings. The order comes from references between resources, not from where anything sits in a file.
 
 What broke:
 - A plan kept repeating an error I had already fixed. The file wasn't saved. Fix: save all files before every validate and plan.
 - A VNet entry missing `name` showed as "each.value is object with 3 attributes." Fix: every VNet entry needs `name`, `address_space`, and `subnets`.
 - Earlier, in the first single-VNet version, two subnets got the same name, so the second silently overwrote the first. The plan showed it; I didn't read it. Fix: read every name in the plan before apply.
 
-Cost: VNets and subnets are free.
+Cost: VNets and subnets are free. Peering bills per GB transferred, so an idle lab costs nothing.
 
 ## Security
 The first version had one NSG per subnet with zero custom rules. Those subnets and NSGs were removed when the network moved into the module. The records subnet gets its own NSG next (see Roadmap). Any allow rule gets its own decision-log entry.
@@ -65,6 +72,7 @@ Cost: NSGs and associations are free.
 ## File layout
 - `main.tf`: resource group
 - `vnet.tf`: the VNet list (`locals`) and the module call
+- `peerings.tf`: hub ↔ records peering, one resource per direction
 - `modules/network/`: the module (variables, VNet and subnet resources, outputs)
 - `bootstrap/`: the separate stack that creates the remote-state storage
 - `outputs.tf`, `variables.tf`, `providers.tf`, `versions.tf`
@@ -79,7 +87,7 @@ After `terraform apply`, Terraform prints three outputs:
 
 Now: outputs let me verify what Terraform built right in the terminal, without opening the Azure portal.
 
-Later: other code (peering, private endpoints) uses these IDs.
+Later: private endpoints and route tables will use these IDs. The peerings read the module's outputs directly.
 
 ## Deploy and destroy
 
@@ -87,8 +95,8 @@ Prerequisites: Terraform (from HashiCorp's website), Azure CLI, an active Azure 
 
 1. `terraform init`: downloads the Azure provider and the module, and connects to remote state. Run once after cloning.
 2. `terraform validate`: checks the configuration for syntax and internal errors. It doesn't contact Azure.
-3. `terraform plan`: shows what Terraform will create, change, or destroy, without touching anything. Currently expect 7 to add: the resource group, 2 VNets, and 4 subnets.
-4. `terraform apply`: Terraform reads the .tf files, calls Azure's APIs through the provider, and records what it built in state. Read the plan, then type `yes` to proceed.
+3. `terraform plan`: shows what Terraform will create, change, or destroy, without touching anything. Currently expect 9 to add: the resource group, 2 VNets, 4 subnets, and 2 peerings.
+4. `terraform apply`: Terraform reads the .tf files, calls Azure's APIs through the provider, and records what it built in state. Read the plan, then type `yes` to proceed. In the portal, each VNet's Peerings page should show Connected.
 5. `terraform destroy`: removes everything in state from Azure. Run it at the end of every session.
 6. `terraform state list`: must come back empty after destroy.
 
