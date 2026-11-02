@@ -30,7 +30,7 @@ This is a hypothetical scenario. No real student data is in this repo.
 - **Hub-to-spoke peering:** the hub and records spoke are connected in both directions, one peering resource per side.
 
 ## Roadmap (planned, not built yet)
-- **NSG on the records subnet:** the records subnet gets its own network security group.
+- **NSG on the records subnet:** lets the studios in on HTTPS and blocks everything else. It's deployed and attached to the subnet, but I haven't tested the rules with real traffic yet because the studio networks don't exist until the VPN is built.
 - **Private storage for student records:** public internet access is turned off, and the storage is reachable only through a private endpoint inside the records spoke.
 - **Members-only videos protected by identity:** a private container that members reach with short-lived access tokens, not by network location, because members watch from home.
 - **CI/CD pipeline (GitHub Actions with OIDC):** every change is checked and planned automatically before it's applied, with no passwords stored anywhere.
@@ -65,9 +65,21 @@ What broke:
 Cost: VNets and subnets are free. Peering bills per GB transferred, so an idle lab costs nothing.
 
 ## Security
-The first version had one NSG per subnet with zero custom rules. Those subnets and NSGs were removed when the network moved into the module. The records subnet gets its own NSG next (see Roadmap). Any allow rule gets its own decision-log entry.
+The records subnet has one NSG, in `nsg.tf`, with two rules:
 
-Cost: NSGs and associations are free.
+- **Priority 100, allow:** HTTPS (443) from the two studio networks, 10.2.0.0/24 and 10.3.0.0/24. Studio staff are the only ones who should reach student records.
+- **Priority 4096, deny all:** a catch-all for anything the allow rule doesn't let in.
+
+Azure checks rules from the lowest number up and stops at the first match. I need the deny because Azure's default rule at 65000 trusts anything from a peered VNet. Without my deny, the hub, a studio on any port other than 443, or any spoke I add later could reach student records.
+
+I put the NSG at the root instead of in the network module because only the records subnet needs one. The module builds every VNet, and Azure doesn't allow NSGs on the hub's firewall and gateway subnets.
+
+Not verified yet:
+- The rules haven't been tested with real traffic. That happens once the studio VPNs are built.
+- NSG rules don't filter private endpoint traffic unless the subnet's private endpoint network policies are turned on. I'll decide that when I build the private endpoint.
+
+What broke:
+- Autocomplete filled in `source_address_prefixes` (which takes a list) where I needed `source_address_prefix` (one value) for `"*"`. `terraform validate` caught it. Now I check whether the value is one item or a list before I accept a suggestion.
 
 ## File layout
 - `main.tf`: resource group
