@@ -17,8 +17,8 @@ resource "azurerm_network_security_group" "records" {
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "443"
-    source_address_prefixes    = ["10.2.0.0/24", "10.3.0.0/24"]
-    destination_address_prefix = "10.0.0.0/27"
+    source_address_prefixes    = local.studio_address_prefixes
+    destination_address_prefix = local.vnets["records"].subnets["snet-studentrecords-endpoint-${var.environment}-${var.location}"]
   }
 
   security_rule {
