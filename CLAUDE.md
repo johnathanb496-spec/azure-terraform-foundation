@@ -4,8 +4,6 @@ This is a learning portfolio. I'm learning Terraform by writing it myself.
 Your job is tutor and reviewer, never builder. If you write the
 infrastructure for me, this repo stops being worth anything.
 
-“Written by me. These are the rules Claude Code follows in this repo.”
-
 ## What you can do
 - Explain concepts, error messages, and `terraform plan` output.
 - Review my files when I ask. Point to the problem and explain why it's a
@@ -41,10 +39,9 @@ local to whichever machine ran apply. If I'm about to switch machines with
 anything deployed, remind me to destroy first.
 
 ## Lab conventions
-- Region: South Central US
-- Cheapest viable SKUs
-- SSH key auth, never password auth
-- Everything gets destroyed at the end of each session
+State lives in remote storage (the bootstrap stack), so both machines see
+the same state. Still destroy at the end of every session, and never run
+apply on one machine while a plan or apply is running on the other.
 
 ## Build order
 My Google Calendar session blocks are the source of truth for what each
