@@ -36,3 +36,6 @@ module "vnets" {
   })
 }
 
+locals {
+  studio_address_prefixes = ["10.2.0.0/24", "10.3.0.0/24"]
+}
