@@ -28,10 +28,11 @@ This is a hypothetical scenario. No real student data is in this repo.
 - **Remote state in Azure Storage:** Terraform's record of what exists lives in one shared, locked place instead of on one laptop. The storage account is created by its own stack in `bootstrap/`, so destroying the main stack never deletes its own state.
 - **Hub and records spoke via a reusable module:** one network module, called once per VNet with `for_each`, builds the hub and the records spoke.
 - **Hub-to-spoke peering:** the hub and records spoke are connected in both directions, one peering resource per side.
+- **NSG on the records subnet:** lets the studios in on HTTPS and blocks everything else. It's deployed and attached to the subnet, but I haven't tested the rules with real traffic yet because the studio networks don't exist until the VPN is built.
+- **Records storage account, locked down:** public network access is off, HTTPS only, TLS 1.2 minimum, and no container can be made public. It's deployed, but nothing can reach its data yet. That comes with the private endpoint.
 
 ## Roadmap (planned, not built yet)
-- **NSG on the records subnet:** lets the studios in on HTTPS and blocks everything else. It's deployed and attached to the subnet, but I haven't tested the rules with real traffic yet because the studio networks don't exist until the VPN is built.
-- **Private storage for student records:** public internet access is turned off, and the storage is reachable only through a private endpoint inside the records spoke.
+- **Private endpoint for student records:** gives the records storage a private address inside the records spoke, plus a private DNS zone so its name resolves to that address.
 - **Members-only videos protected by identity:** a private container that members reach with short-lived access tokens, not by network location, because members watch from home.
 - **CI/CD pipeline (GitHub Actions with OIDC):** every change is checked and planned automatically before it's applied, with no passwords stored anywhere.
 - **Monitoring:** access logs from the records storage go to Log Analytics, with a query that shows who touched student records.
@@ -81,10 +82,27 @@ Not verified yet:
 What broke:
 - Autocomplete filled in `source_address_prefixes` (which takes a list) where I needed `source_address_prefix` (one value) for `"*"`. `terraform validate` caught it. Now I check whether the value is one item or a list before I accept a suggestion.
 
+### Records storage
+`storage.tf` creates the storage account that will hold sensitive student data. It lives in the main stack, separate from the remote-state storage in `bootstrap/`.
+
+- **Public network access disabled:** the account is closed to the internet. The only way in will be the private endpoint in the records spoke.
+- **HTTPS only, minimum TLS 1.2:** unencrypted connections and older, weaker encryption versions are refused.
+- **No public containers:** `allow_nested_items_to_be_public = false`, so nobody can make a single container public later.
+- **Standard / LRS / StorageV2:** the cheapest tier that fits. `account_kind` is the default, but I wrote it out so a provider upgrade can't change it.
+
+The name is `stjbrecords<env>scus`. Storage account names allow only lowercase letters and numbers, no hyphens, 24 characters max, and must be unique across all of Azure, so the naming convention is shortened: `scus` is South Central US.
+
+What broke:
+- I copied an example that referenced `azurerm_resource_group.rg`, but my resource group's name is `lab`. Terraform said the resource was "not declared." That meant nothing in my files had that name, not that I needed to add a resource group. Fix: when I copy a block, check that every reference points at a name that exists in my code.
+
+Cost: an empty Standard/LRS account costs pennies per session.
+
 ## File layout
 - `main.tf`: resource group
-- `vnet.tf`: the VNet list (`locals`) and the module call
+- `vnet.tf`: the VNet list and studio address prefixes (`locals`) and the module call
 - `peerings.tf`: hub ↔ records peering, one resource per direction
+- `nsg.tf`: records subnet NSG and its association
+- `storage.tf`: records storage account
 - `modules/network/`: the module (variables, VNet and subnet resources, outputs)
 - `bootstrap/`: the separate stack that creates the remote-state storage
 - `outputs.tf`, `variables.tf`, `providers.tf`, `versions.tf`
@@ -107,8 +125,8 @@ Prerequisites: Terraform (from HashiCorp's website), Azure CLI, an active Azure 
 
 1. `terraform init`: downloads the Azure provider and the module, and connects to remote state. Run once after cloning.
 2. `terraform validate`: checks the configuration for syntax and internal errors. It doesn't contact Azure.
-3. `terraform plan`: shows what Terraform will create, change, or destroy, without touching anything. Currently expect 9 to add: the resource group, 2 VNets, 4 subnets, and 2 peerings.
-4. `terraform apply`: Terraform reads the .tf files, calls Azure's APIs through the provider, and records what it built in state. Read the plan, then type `yes` to proceed. In the portal, each VNet's Peerings page should show Connected.
+3. `terraform plan`: shows what Terraform will create, change, or destroy, without touching anything. Currently expect 12 to add: the resource group, 2 VNets, 4 subnets, 2 peerings, the NSG, its subnet association, and the records storage account.
+4. `terraform apply`: Terraform reads the .tf files, calls Azure's APIs through the provider, and records what it built in state. Read the plan, then type `yes` to proceed. In the portal, each VNet's Peerings page should show Connected, and the records storage account's Networking page should show public network access Disabled.
 5. `terraform destroy`: removes everything in state from Azure. Run it at the end of every session.
 6. `terraform state list`: must come back empty after destroy.
 
