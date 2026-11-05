@@ -27,3 +27,9 @@ variable "tags" {
   description = "Map of tags to assign to the resource"
   type        = map(string)
 }
+
+variable "private_endpoint_network_policies" {
+  type  = string
+  default = "Disabled"
+  }
+
