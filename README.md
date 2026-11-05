@@ -29,10 +29,10 @@ This is a hypothetical scenario. No real student data is in this repo.
 - **Hub and records spoke via a reusable module:** one network module, called once per VNet with `for_each`, builds the hub and the records spoke.
 - **Hub-to-spoke peering:** the hub and records spoke are connected in both directions, one peering resource per side.
 - **NSG on the records subnet:** lets the studios in on HTTPS and blocks everything else. It's deployed and attached to the subnet, but I haven't tested the rules with real traffic yet because the studio networks don't exist until the VPN is built.
-- **Records storage account, locked down:** public network access is off, HTTPS only, TLS 1.2 minimum, and no container can be made public. It's deployed, but nothing can reach its data yet. That comes with the private endpoint.
+- **Records storage account, locked down:** public network access is off, HTTPS only, TLS 1.2 minimum, and no container can be made public.
+- **Private endpoint for student records:** the records storage account gets a private address inside the records spoke, plus a private DNS zone linked to the hub and records VNets so its name resolves to that address. Configuration is verified in the portal; resolution from inside a VNet hasn't been tested yet (needs a test VM).
 
 ## Roadmap (planned, not built yet)
-- **Private endpoint for student records:** gives the records storage a private address inside the records spoke, plus a private DNS zone so its name resolves to that address.
 - **Members-only videos protected by identity:** a private container that members reach with short-lived access tokens, not by network location, because members watch from home.
 - **CI/CD pipeline (GitHub Actions with OIDC):** every change is checked and planned automatically before it's applied, with no passwords stored anywhere.
 - **Monitoring:** access logs from the records storage go to Log Analytics, with a query that shows who touched student records.
@@ -49,6 +49,8 @@ A reusable network module (`modules/network/`) creates one VNet plus every subne
 
 Every VNet is a /24, and subnets are carved out of it. The hub subnets use Azure's reserved names exactly, because Azure finds the firewall and gateway subnets by name. They skip my naming convention on purpose. No gateway or firewall is deployed yet.
 
+The module takes a `private_endpoint_network_policies` value (default `Disabled`). The root sets it to `Enabled` for the records VNet only, so the records NSG applies to private endpoint traffic.
+
 ### Peering
 `peerings.tf` connects the hub and the records spoke with one `azurerm_virtual_network_peering` per direction: hub → records and records → hub. Azure marks a peering Connected only when both sides exist. With one side, nothing flows.
 
@@ -56,12 +58,15 @@ Peering is not transitive. A studio peered to the hub couldn't reach records thr
 
 Each peering references the module's `vnet_name` and `vnet_id` outputs, and the resource group by reference (`azurerm_resource_group.lab.name`), not as a typed-out string. A string gives the same name but tells Terraform nothing about what must exist first.
 
-Terraform builds the resource group first, then the VNets, then the subnets and peerings. The order comes from references between resources, not from where anything sits in a file.
+Terraform builds in waves, not top to bottom. Everything with nothing to wait for starts at the same time, and each reference makes a resource wait for the one it points at. The order comes from references between resources, not from where anything sits in a file.
+
+Both peerings also have `depends_on = [module.vnets]`, so they wait until every VNet and subnet in the module is finished. Without it, Terraform created a peering at the same moment as a subnet on the same VNet, and Azure rejected the peering because it locks a VNet during a subnet change.
 
 What broke:
 - A plan kept repeating an error I had already fixed. The file wasn't saved. Fix: save all files before every validate and plan.
 - A VNet entry missing `name` showed as "each.value is object with 3 attributes." Fix: every VNet entry needs `name`, `address_space`, and `subnets`.
 - Earlier, in the first single-VNet version, two subnets got the same name, so the second silently overwrote the first. The plan showed it; I didn't read it. Fix: read every name in the plan before apply.
+- The first apply with the private endpoint built 15 of 16 resources. `peer-hub-to-records` failed with a 400 (`ReferencedResourceNotProvisioned`): the records VNet was still "Updating" from its subnet. Nothing in my code connected the peering to the subnet, so Terraform ran them in parallel. Re-running apply fixed it; `depends_on` keeps it from happening again. Not yet confirmed on a clean deploy.
 
 Cost: VNets and subnets are free. Peering bills per GB transferred, so an idle lab costs nothing.
 
@@ -75,9 +80,10 @@ Azure checks rules from the lowest number up and stops at the first match. I nee
 
 I put the NSG at the root instead of in the network module because only the records subnet needs one. The module builds every VNet, and Azure doesn't allow NSGs on the hub's firewall and gateway subnets.
 
+By default, NSG rules don't apply to private endpoint traffic. The records subnet has private endpoint network policies set to `Enabled`, so the NSG filters traffic to the endpoint and route tables will apply when the firewall is built.
+
 Not verified yet:
 - The rules haven't been tested with real traffic. That happens once the studio VPNs are built.
-- NSG rules don't filter private endpoint traffic unless the subnet's private endpoint network policies are turned on. I'll decide that when I build the private endpoint.
 
 What broke:
 - Autocomplete filled in `source_address_prefixes` (which takes a list) where I needed `source_address_prefix` (one value) for `"*"`. `terraform validate` caught it. Now I check whether the value is one item or a list before I accept a suggestion.
@@ -85,7 +91,7 @@ What broke:
 ### Records storage
 `storage.tf` creates the storage account that will hold sensitive student data. It lives in the main stack, separate from the remote-state storage in `bootstrap/`.
 
-- **Public network access disabled:** the account is closed to the internet. The only way in will be the private endpoint in the records spoke.
+- **Public network access disabled:** the account is closed to the internet. The only way in is the private endpoint in the records spoke.
 - **HTTPS only, minimum TLS 1.2:** unencrypted connections and older, weaker encryption versions are refused.
 - **No public containers:** `allow_nested_items_to_be_public = false`, so nobody can make a single container public later.
 - **Standard / LRS / StorageV2:** the cheapest tier that fits. `account_kind` is the default, but I wrote it out so a provider upgrade can't change it.
@@ -97,12 +103,32 @@ What broke:
 
 Cost: an empty Standard/LRS account costs pennies per session.
 
+### Private endpoint
+`private-endpoint.tf` creates three things:
+
+- **Private endpoint** in the records subnet. Azure gives it a network interface with a private IP, and `private_service_connection` plugs it into the storage account's blob service.
+- **Private DNS zone** `privatelink.blob.core.windows.net`. The endpoint's `private_dns_zone_group` writes the storage account's name and private IP into it.
+- **Two VNet links** (`for_each` over hub and records), so lookups from inside those VNets get the private IP. The studio VNets aren't linked, because real studios are on-prem and would need DNS forwarding instead.
+
+Verified:
+- Portal: endpoint Approved, A record in the zone, both VNet links Completed, records subnet policy Enabled.
+- From my laptop (outside Azure): the storage name resolves through the `privatelink` alias to a public IP, and a request returns 403. The public door is locked.
+
+Not verified yet:
+- Resolution to the private IP from inside a VNet. That needs a test VM, planned with the firewall build.
+
+What broke:
+- Two references guessed module outputs that don't exist (`.id` and `["records_subnet_id"]`). Fix: a module only returns what's in its `outputs.tf` (`vnet_id`, `subnet_ids`, `vnet_name`), so I check that file instead of guessing.
+
+Cost: a private endpoint is about $0.01/hour plus $0.01/GB processed in South Central US, and the DNS zone is about $0.50/month. A lab session costs pennies.
+
 ## File layout
 - `main.tf`: resource group
 - `vnet.tf`: the VNet list and studio address prefixes (`locals`) and the module call
 - `peerings.tf`: hub ↔ records peering, one resource per direction
 - `nsg.tf`: records subnet NSG and its association
 - `storage.tf`: records storage account
+- `private-endpoint.tf`: records private endpoint, blob private DNS zone, and its VNet links
 - `modules/network/`: the module (variables, VNet and subnet resources, outputs)
 - `bootstrap/`: the separate stack that creates the remote-state storage
 - `outputs.tf`, `variables.tf`, `providers.tf`, `versions.tf`
@@ -117,7 +143,7 @@ After `terraform apply`, Terraform prints three outputs:
 
 Now: outputs let me verify what Terraform built right in the terminal, without opening the Azure portal.
 
-Later: private endpoints and route tables will use these IDs. The peerings read the module's outputs directly.
+Later: route tables will use these IDs. The peerings and the private endpoint read the module's outputs directly.
 
 ## Deploy and destroy
 
@@ -125,8 +151,8 @@ Prerequisites: Terraform (from HashiCorp's website), Azure CLI, an active Azure 
 
 1. `terraform init`: downloads the Azure provider and the module, and connects to remote state. Run once after cloning.
 2. `terraform validate`: checks the configuration for syntax and internal errors. It doesn't contact Azure.
-3. `terraform plan`: shows what Terraform will create, change, or destroy, without touching anything. Currently expect 12 to add: the resource group, 2 VNets, 4 subnets, 2 peerings, the NSG, its subnet association, and the records storage account.
-4. `terraform apply`: Terraform reads the .tf files, calls Azure's APIs through the provider, and records what it built in state. Read the plan, then type `yes` to proceed. In the portal, each VNet's Peerings page should show Connected, and the records storage account's Networking page should show public network access Disabled.
+3. `terraform plan`: shows what Terraform will create, change, or destroy, without touching anything. Currently expect 16 to add: the resource group, 2 VNets, 4 subnets, 2 peerings, the NSG, its subnet association, the records storage account, the private endpoint, the private DNS zone, and 2 DNS VNet links.
+4. `terraform apply`: Terraform reads the .tf files, calls Azure's APIs through the provider, and records what it built in state. Read the plan, then type `yes` to proceed. In the portal, each VNet's Peerings page should show Connected, the records storage account's Networking page should show public network access Disabled, and the private endpoint should show Approved.
 5. `terraform destroy`: removes everything in state from Azure. Run it at the end of every session.
 6. `terraform state list`: must come back empty after destroy.
 
