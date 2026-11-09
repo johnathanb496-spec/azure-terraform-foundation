@@ -60,13 +60,13 @@ Each peering references the module's `vnet_name` and `vnet_id` outputs, and the 
 
 Terraform builds in waves, not top to bottom. Everything with nothing to wait for starts at the same time, and each reference makes a resource wait for the one it points at. The order comes from references between resources, not from where anything sits in a file.
 
-Both peerings also have `depends_on = [module.vnets]`, so they wait until every VNet and subnet in the module is finished. Without it, Terraform created a peering at the same moment as a subnet on the same VNet, and Azure rejected the peering because it locks a VNet during a subnet change.
+Both peerings also have `depends_on = [module.vnets]`, so they wait until every VNet and subnet in the module is finished. Without it, Terraform created a peering at the same moment as a subnet on the same VNet, and Azure rejected the peering because it locks a VNet during a subnet change. The tradeoff: the peerings wait for every subnet in both VNets, not only the one they conflict with. On a clean deploy that added about 14 seconds.
 
 What broke:
 - A plan kept repeating an error I had already fixed. The file wasn't saved. Fix: save all files before every validate and plan.
 - A VNet entry missing `name` showed as "each.value is object with 3 attributes." Fix: every VNet entry needs `name`, `address_space`, and `subnets`.
 - Earlier, in the first single-VNet version, two subnets got the same name, so the second silently overwrote the first. The plan showed it; I didn't read it. Fix: read every name in the plan before apply.
-- The first apply with the private endpoint built 15 of 16 resources. `peer-hub-to-records` failed with a 400 (`ReferencedResourceNotProvisioned`): the records VNet was still "Updating" from its subnet. Nothing in my code connected the peering to the subnet, so Terraform ran them in parallel. Re-running apply fixed it; `depends_on` keeps it from happening again. Not yet confirmed on a clean deploy.
+- The first apply with the private endpoint built 15 of 16 resources. `peer-hub-to-records` failed with a 400 (`ReferencedResourceNotProvisioned`): the records VNet was still "Updating" from its subnet. Nothing in my code connected the peering to the subnet, so Terraform ran them in parallel. Re-running apply fixed it, and `depends_on` keeps it from happening again. Confirmed on a clean deploy (Nov 9): all 16 resources built with no error, and the log shows both peerings starting only after the last subnet finished.
 
 Cost: VNets and subnets are free. Peering bills per GB transferred, so an idle lab costs nothing.
 
@@ -109,6 +109,8 @@ Cost: an empty Standard/LRS account costs pennies per session.
 - **Private endpoint** in the records subnet. Azure gives it a network interface with a private IP, and `private_service_connection` plugs it into the storage account's blob service.
 - **Private DNS zone** `privatelink.blob.core.windows.net`. The endpoint's `private_dns_zone_group` writes the storage account's name and private IP into it.
 - **Two VNet links** (`for_each` over hub and records), so lookups from inside those VNets get the private IP. The studio VNets aren't linked, because real studios are on-prem and would need DNS forwarding instead.
+
+**Why a private endpoint instead of a service endpoint?** A service endpoint only covers traffic coming from subnets inside Azure. Our traffic comes from studio staff over the VPN, so a service endpoint would not cover them. A private endpoint gives the storage account a private IP, and the private DNS zone points its name at that IP, so public access can stay fully off. Worth the small cost (about $7.30/month) to protect minors' data.
 
 Verified:
 - Portal: endpoint Approved, A record in the zone, both VNet links Completed, records subnet policy Enabled.
