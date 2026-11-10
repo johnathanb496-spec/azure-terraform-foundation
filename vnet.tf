@@ -34,7 +34,7 @@ module "vnets" {
     environment = var.environment
     location    = var.location
   })
-  private_endpoint_network_policies =  each.key == "records" ? "Enabled" : "Disabled"
+  private_endpoint_network_policies = each.key == "records" ? "Enabled" : "Disabled"
 }
 
 locals {
