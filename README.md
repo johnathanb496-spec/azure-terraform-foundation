@@ -31,9 +31,9 @@ This is a hypothetical scenario. No real student data is in this repo.
 - **NSG on the records subnet:** lets the studios in on HTTPS and blocks everything else. It's deployed and attached to the subnet, but I haven't tested the rules with real traffic yet because the studio networks don't exist until the VPN is built.
 - **Records storage account, locked down:** public network access is off, HTTPS only, TLS 1.2 minimum, and no container can be made public.
 - **Private endpoint for student records:** the records storage account gets a private address inside the records spoke, plus a private DNS zone linked to the hub and records VNets so its name resolves to that address. Configuration is verified in the portal; resolution from inside a VNet hasn't been tested yet (needs a test VM).
+- **Members-only videos storage:** a second storage account outside the VNets with a private container. Members will reach videos with short-lived SAS tokens issued by the app, not by network location, because they watch from home. It deploys and destroys cleanly; the SAS path itself isn't tested because the app is out of scope.
 
 ## Roadmap (planned, not built yet)
-- **Members-only videos protected by identity:** a private container that members reach with short-lived access tokens, not by network location, because members watch from home.
 - **CI/CD pipeline (GitHub Actions with OIDC):** every change is checked and planned automatically before it's applied, with no passwords stored anywhere.
 - **Monitoring:** access logs from the records storage go to Log Analytics, with a query that shows who touched student records.
 - **Site-to-site VPN for the two studios:** a VPN gateway in the hub, one connection per studio.
@@ -124,6 +124,23 @@ What broke:
 
 Cost: a private endpoint is about $0.01/hour plus $0.01/GB processed in South Central US, and the DNS zone is about $0.50/month. A lab session costs pennies.
 
+### Videos storage
+`videos-storage.tf` creates a second storage account, `stjbvideosdevscus`, for members-only lesson videos, plus a container in it called `lesson-videos`. It's separate from the records account and from the remote-state storage, and it sits outside the VNets.
+
+- **Network access on, anonymous access off:** a storage account has two different "public" settings. `public_network_access_enabled` decides whether the account can be reached from the internet at all. `allow_nested_items_to_be_public` decides whether someone can read a file without any credential. Members watch from home, so network access stays on. Anonymous access is off, so every request needs a SAS token.
+- **Private container:** `container_access_type = "private"`.
+- **HTTPS only, minimum TLS 1.2, Standard / LRS / StorageV2:** same as the records account.
+
+**Why SAS tokens instead of a private endpoint?** Since these videos need to be accessible on the internet with the SAS token, a private endpoint would fail because this would mean that only people from inside the network or VPN would be able to access it.
+
+Verified:
+- Deployed and destroyed cleanly with the rest of the stack (Nov 10, 18 resources). The log shows the container starting on the line right after the account finished, because the container references the account's ID.
+
+Not verified yet:
+- No video uploaded and no SAS token issued. Issuing tokens is the app's job, and the app is out of scope.
+
+Cost: an empty Standard/LRS account costs pennies per session.
+
 ## File layout
 - `main.tf`: resource group
 - `vnet.tf`: the VNet list and studio address prefixes (`locals`) and the module call
@@ -131,6 +148,7 @@ Cost: a private endpoint is about $0.01/hour plus $0.01/GB processed in South Ce
 - `nsg.tf`: records subnet NSG and its association
 - `storage.tf`: records storage account
 - `private-endpoint.tf`: records private endpoint, blob private DNS zone, and its VNet links
+- `videos-storage.tf`: videos storage account and its private container
 - `modules/network/`: the module (variables, VNet and subnet resources, outputs)
 - `bootstrap/`: the separate stack that creates the remote-state storage
 - `outputs.tf`, `variables.tf`, `providers.tf`, `versions.tf`
@@ -153,8 +171,8 @@ Prerequisites: Terraform (from HashiCorp's website), Azure CLI, an active Azure 
 
 1. `terraform init`: downloads the Azure provider and the module, and connects to remote state. Run once after cloning.
 2. `terraform validate`: checks the configuration for syntax and internal errors. It doesn't contact Azure.
-3. `terraform plan`: shows what Terraform will create, change, or destroy, without touching anything. Currently expect 16 to add: the resource group, 2 VNets, 4 subnets, 2 peerings, the NSG, its subnet association, the records storage account, the private endpoint, the private DNS zone, and 2 DNS VNet links.
-4. `terraform apply`: Terraform reads the .tf files, calls Azure's APIs through the provider, and records what it built in state. Read the plan, then type `yes` to proceed. In the portal, each VNet's Peerings page should show Connected, the records storage account's Networking page should show public network access Disabled, and the private endpoint should show Approved.
+3. `terraform plan`: shows what Terraform will create, change, or destroy, without touching anything. Currently expect 18 to add: the resource group, 2 VNets, 4 subnets, 2 peerings, the NSG, its subnet association, the records storage account, the private endpoint, the private DNS zone, 2 DNS VNet links, and the videos storage account and its container.
+4. `terraform apply`: Terraform reads the .tf files, calls Azure's APIs through the provider, and records what it built in state. Read the plan, then type `yes` to proceed. In the portal, each VNet's Peerings page should show Connected, the records storage account's Networking page should show public network access Disabled, the private endpoint should show Approved, and the `lesson-videos` container should show access level Private.
 5. `terraform destroy`: removes everything in state from Azure. Run it at the end of every session.
 6. `terraform state list`: must come back empty after destroy.
 
