@@ -1,5 +1,5 @@
 output "resource_group_id" {
-  value       = azurerm_resource_group.lab.id
+  value       = data.azurerm_resource_group.lab.id
   description = "RG ID"
 }
 

@@ -1,7 +1,7 @@
 resource "azurerm_storage_account" "videos" {
   name                            = "stjbvideosdevscus"
-  resource_group_name             = azurerm_resource_group.lab.name
-  location                        = azurerm_resource_group.lab.location
+  resource_group_name             = data.azurerm_resource_group.lab.name
+  location                        = data.azurerm_resource_group.lab.location
   account_tier                    = "Standard"
   account_replication_type        = "LRS"
   public_network_access_enabled   = true

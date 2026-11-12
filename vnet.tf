@@ -25,8 +25,8 @@ module "vnets" {
   for_each = local.vnets
 
   name                = each.value.name
-  resource_group_name = azurerm_resource_group.lab.name
-  location            = azurerm_resource_group.lab.location
+  resource_group_name = data.azurerm_resource_group.lab.name
+  location            = data.azurerm_resource_group.lab.location
   address_space       = each.value.address_space
   subnets             = each.value.subnets
   tags = merge(var.tags, {
