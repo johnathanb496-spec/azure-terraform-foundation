@@ -56,7 +56,7 @@ The module takes a `private_endpoint_network_policies` value (default `Disabled`
 
 Peering is not transitive. A studio peered to the hub couldn't reach records through it, which is why the hub will get a VPN gateway and firewall instead. Gateway transit and forwarded traffic are off until those are built.
 
-Each peering references the module's `vnet_name` and `vnet_id` outputs, and the resource group by reference (`azurerm_resource_group.lab.name`), not as a typed-out string. A string gives the same name but tells Terraform nothing about what must exist first.
+Each peering references the module's `vnet_name` and `vnet_id` outputs, and the resource group by reference (`data.azurerm_resource_group.lab.name`), not as a typed-out string. A string gives the same name but tells Terraform nothing about what must exist first.
 
 Terraform builds in waves, not top to bottom. Everything with nothing to wait for starts at the same time, and each reference makes a resource wait for the one it points at. The order comes from references between resources, not from where anything sits in a file.
 

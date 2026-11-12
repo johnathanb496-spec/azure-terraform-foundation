@@ -2,6 +2,9 @@ provider "azurerm" {
   features {}
 }
 
+provider "azuread" {}
+
+data "azurerm_client_config" "current" {}
 terraform {
   required_version = "~> 1.16"
 
@@ -9,6 +12,10 @@ terraform {
     azurerm = {
       source  = "hashicorp/azurerm"
       version = "~> 4.0"
+    }
+    azuread = {
+      source  = "hashicorp/azuread"
+      version = "~> 3.0"
     }
   }
 }
