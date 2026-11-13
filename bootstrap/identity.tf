@@ -12,7 +12,7 @@ resource "azuread_application_federated_identity_credential" "pull_request" {
   display_name   = "github-pull-request"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:johnathanb496-spec/azure-terraform-foundation:pull_request"
+  subject        = "repo:johnathanb496-spec@240568993/azure-terraform-foundation@1420967840:pull_request"
 }
 
 resource "azuread_application_federated_identity_credential" "main" {
@@ -20,5 +20,5 @@ resource "azuread_application_federated_identity_credential" "main" {
   display_name   = "github-main"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:johnathanb496-spec/azure-terraform-foundation:ref:refs/heads/main"
+  subject        = "repo:johnathanb496-spec@240568993/azure-terraform-foundation@1420967840:ref:refs/heads/main"
 }
