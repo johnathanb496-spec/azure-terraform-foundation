@@ -32,10 +32,11 @@ This is a hypothetical scenario. No real student data is in this repo.
 - **Records storage account, locked down:** public network access is off, HTTPS only, TLS 1.2 minimum, and no container can be made public.
 - **Private endpoint for student records:** the records storage account gets a private address inside the records spoke, plus a private DNS zone linked to the hub and records VNets so its name resolves to that address. Configuration is verified in the portal; resolution from inside a VNet hasn't been tested yet (needs a test VM).
 - **Members-only videos storage:** a second storage account outside the VNets with a private container. Members will reach videos with short-lived SAS tokens issued by the app, not by network location, because they watch from home. It deploys and destroys cleanly; the SAS path itself isn't tested because the app is out of scope.
-- **Pipeline identity for CI/CD:** an identity in Entra ID that GitHub Actions will log in as, using short-lived OIDC tokens instead of a stored password, with access to one resource group only. It lives in `bootstrap/` along with the resource group itself. Applied and its role checked; no workflow uses it yet.
+- **Pipeline identity for CI/CD:** an identity in Entra ID that GitHub Actions logs in as, using short-lived OIDC tokens instead of a stored password, with access to one resource group only. It lives in `bootstrap/` along with the resource group itself.
+- **CI: pull request checks (GitHub Actions):** every pull request into `main` runs fmt, init, validate, and plan, logged in as the pipeline identity with no password. Green on its first real PR (Nov 13).
 
 ## Roadmap (planned, not built yet)
-- **CI/CD workflows (GitHub Actions):** a pull request workflow that checks and plans every change, then manual apply and destroy workflows from main. The identity they log in with is built (see Pipeline identity); the workflows are next.
+- **CD workflows (GitHub Actions):** manual apply and destroy workflows from `main`, using the same identity. The pull request checks are built (see CI); these are next.
 - **Monitoring:** access logs from the records storage go to Log Analytics, with a query that shows who touched student records.
 - **Site-to-site VPN for the two studios:** a VPN gateway in the hub, one connection per studio.
 - **Azure Firewall Basic with route tables:** studio traffic to student records is forced through one rule set and one log before it reaches the records spoke.
@@ -146,8 +147,9 @@ Cost: an empty Standard/LRS account costs pennies per session.
 `bootstrap/` creates the identity GitHub Actions will use to reach Azure, plus the resource group the main stack deploys into.
 
 - **App registration and service principal:** the identity itself, in Entra ID. Roles are assigned to the service principal, not the app registration.
-- **Two federated credentials:** trust rules that accept GitHub's token only for this repo, one for pull requests and one for the main branch. Login uses OIDC: GitHub issues a short-lived signed token, so no password or client secret is stored anywhere.
-- **Two role assignments:** Contributor on `rg-networking-dev-southcentralus` only, and Storage Blob Data Contributor on the remote-state storage account.
+- **Two federated credentials:** trust rules that accept GitHub's token only for this repo, one for pull requests and one for the main branch. Login uses OIDC: GitHub issues a short-lived signed token, so no password or client secret is stored anywhere. The subjects use GitHub's ID-based format (`repo:<owner>@<owner-id>/<repo>@<repo-id>:...`), so a renamed or re-created repo with the same name can't match.
+- **Pipeline role assignments:** Contributor on `rg-networking-dev-southcentralus` only, and Storage Blob Data Contributor on the remote-state storage account.
+- **My user's state access:** Storage Blob Data Contributor on the remote-state storage account for whoever runs bootstrap (`data.azurerm_client_config.current`). The backend uses Entra auth, and Owner alone doesn't include reading blob data.
 - **Resource group moved to bootstrap:** the main stack now reads it with a data source (`data.azurerm_resource_group.lab`) instead of creating it.
 - **Provider registration off in the main stack:** `resource_provider_registrations = "none"`, because an identity scoped to one resource group can't register resource providers across the subscription.
 
@@ -161,14 +163,34 @@ Verified:
 - Bootstrap applied 7 resources (Nov 12). The resource group shows Succeeded, and Contributor is assigned on it.
 - The main stack plans 17 resources while reading the resource group through the data source.
 
+Verified (Nov 13):
+- The pull request workflow logged in as the pipeline, read state, and planned 17 resources. That proves the pull request credential, the state role, and the resource group role.
+- My own `terraform init -reconfigure` succeeds with the Entra backend.
+
 Not verified yet:
-- Nothing has logged in as the pipeline yet. The first pull request workflow run tests the federated credential and both roles.
+- The main-branch credential. It's first used by the apply workflow.
 
 What broke:
 - Autocomplete offered `application_id` on the service principal; azuread 3.x renamed it `client_id`. I also typed the resource type with hyphens (`azuread-service-principal`) instead of underscores. Both were caught in review before running plan.
 - Renaming 14 references with find-and-replace across files ran more than once and produced `data.data.`. Fix: replace `data.data.` with `data.` until no results are left, then `git grep` to check every reference.
 
 Cost: $0. App registrations, service principals, role assignments, and an empty resource group are free.
+
+### CI: pull request checks (GitHub Actions + OIDC)
+`.github/workflows/terraform.yml` runs on every pull request into `main`: `terraform fmt -check`, `init`, `validate`, and `plan`, on a GitHub-hosted runner. The runner logs into Azure with OIDC, so there is no client secret anywhere. The pipeline identity can only touch one resource group (Contributor) and the state storage (Storage Blob Data Contributor).
+
+**How to use:** open a PR. The check runs automatically, and the plan output is in the job log. Nothing deploys from a PR. CI only checks the main stack; changes in `bootstrap/` are planned and applied locally.
+
+**Backend:** `use_azuread_auth = true`, so Terraform reaches state with Entra ID instead of the storage account key. Anyone running locally needs Storage Blob Data Contributor on the state account. After pulling this change, run `terraform init -reconfigure`.
+
+Verified:
+- PR #22: green check, plan log shows `17 to add, 0 to change, 0 to destroy`.
+- `fmt -check` caught a misaligned `=` in `versions.tf` before the first push. I ran it locally first, the same check the pipeline runs.
+
+What broke:
+- The first run failed at `init` with `AADSTS700213: No matching federated identity record found`. GitHub's OIDC token now includes the owner and repo ID numbers in its subject, and my federated credentials still had the older name-only format. Azure compares subjects exactly, so I copied the subject from the error log into both credentials, re-applied bootstrap, and re-ran.
+
+Cost: $0. Runners are free for public repos, and federated credentials and role assignments aren't billed. Nothing in the main stack was deployed.
 
 ## File layout
 - `main.tf`: resource group lookup (data source); the resource group itself is created in `bootstrap/`
@@ -179,7 +201,8 @@ Cost: $0. App registrations, service principals, role assignments, and an empty 
 - `private-endpoint.tf`: records private endpoint, blob private DNS zone, and its VNet links
 - `videos-storage.tf`: videos storage account and its private container
 - `modules/network/`: the module (variables, VNet and subnet resources, outputs)
-- `bootstrap/`: the separate stack, applied by hand and never destroyed: remote-state storage, the resource group, and the pipeline identity with its role assignments
+- `bootstrap/`: the separate stack, applied by hand and never destroyed: remote-state storage, the resource group, the pipeline identity with its role assignments, and my user's state access
+- `.github/workflows/terraform.yml`: the pull request check workflow
 - `outputs.tf`, `variables.tf`, `providers.tf`, `versions.tf`
 
 Terraform merges every .tf file in a folder. File placement is for readability and doesn't change the build order.
@@ -198,8 +221,8 @@ Later: route tables will use these IDs. The peerings and the private endpoint re
 
 Prerequisites: Terraform (from HashiCorp's website), Azure CLI, an active Azure subscription. Run `az login` once before starting.
 
-1. **Bootstrap first (once):** `cd bootstrap`, then `terraform init` and `terraform apply`. This creates the remote-state storage, the resource group, and the pipeline identity. Bootstrap keeps local state (ignored by git) and is never destroyed. Then `cd ..` for the main stack.
-2. `terraform init`: downloads the Azure provider and the module, and connects to remote state. Run once after cloning.
+1. **Bootstrap first (once):** `cd bootstrap`, then `terraform init` and `terraform apply`. This creates the remote-state storage, the resource group, the pipeline identity, and your own Storage Blob Data Contributor role on the state account. Bootstrap keeps local state (ignored by git) and is never destroyed. Then `cd ..` for the main stack.
+2. `terraform init`: downloads the Azure provider and the module, and connects to remote state using your Entra login (not the storage key). Run once after cloning. If the backend block changes, run `terraform init -reconfigure`. A new role can take a few minutes to take effect, so a 403 right after bootstrap usually means wait and retry.
 3. `terraform validate`: checks the configuration for syntax and internal errors. It doesn't contact Azure.
 4. `terraform plan`: shows what Terraform will create, change, or destroy, without touching anything. Currently expect 17 to add: 2 VNets, 4 subnets, 2 peerings, the NSG, its subnet association, the records storage account, the private endpoint, the private DNS zone, 2 DNS VNet links, and the videos storage account and its container. The resource group isn't in the count because bootstrap creates it.
 5. `terraform apply`: Terraform reads the .tf files, calls Azure's APIs through the provider, and records what it built in state. Read the plan, then type `yes` to proceed. In the portal, each VNet's Peerings page should show Connected, the records storage account's Networking page should show public network access Disabled, the private endpoint should show Approved, and the `lesson-videos` container should show access level Private.
