@@ -1,5 +1,5 @@
 # azure-terraform-foundation
-Terraform on Azure: a resource group, remote state, and a hub-and-spoke network built from code for a fictional multi-site business. Deploy and destroy with no portal steps.
+Terraform on Azure: a resource group, remote state, and a hub-and-spoke network built from code for a fictional multi-site business. Deploy and destroy with no portal steps, from the terminal or from GitHub Actions.
 
 ## Business problem
 
@@ -34,9 +34,10 @@ This is a hypothetical scenario. No real student data is in this repo.
 - **Members-only videos storage:** a second storage account outside the VNets with a private container. Members will reach videos with short-lived SAS tokens issued by the app, not by network location, because they watch from home. It deploys and destroys cleanly; the SAS path itself isn't tested because the app is out of scope.
 - **Pipeline identity for CI/CD:** an identity in Entra ID that GitHub Actions logs in as, using short-lived OIDC tokens instead of a stored password, with access to one resource group only. It lives in `bootstrap/` along with the resource group itself.
 - **CI: pull request checks (GitHub Actions):** every pull request into `main` runs fmt, init, validate, and plan, logged in as the pipeline identity with no password. Green on its first real PR (Nov 13).
+- **CD: apply and destroy from GitHub (GitHub Actions):** two manual workflows on `main` build the full stack and tear it down, logged in as the same pipeline identity. Applied 17 and destroyed 17 on their first runs (Nov 16).
 
 ## Roadmap (planned, not built yet)
-- **CD workflows (GitHub Actions):** manual apply and destroy workflows from `main`, using the same identity. The pull request checks are built (see CI); these are next.
+- **Custom role for the pipeline:** replace Contributor on the resource group with a custom role that allows only the actions this stack needs, found by reading the 403 errors from the apply workflow.
 - **Monitoring:** access logs from the records storage go to Log Analytics, with a query that shows who touched student records.
 - **Site-to-site VPN for the two studios:** a VPN gateway in the hub, one connection per studio.
 - **Azure Firewall Basic with route tables:** studio traffic to student records is forced through one rule set and one log before it reaches the records spoke.
@@ -167,8 +168,8 @@ Verified (Nov 13):
 - The pull request workflow logged in as the pipeline, read state, and planned 17 resources. That proves the pull request credential, the state role, and the resource group role.
 - My own `terraform init -reconfigure` succeeds with the Entra backend.
 
-Not verified yet:
-- The main-branch credential. It's first used by the apply workflow.
+Verified (Nov 16):
+- The main-branch credential. The apply and destroy workflows logged in with it on their first runs.
 
 What broke:
 - Autocomplete offered `application_id` on the service principal; azuread 3.x renamed it `client_id`. I also typed the resource type with hyphens (`azuread-service-principal`) instead of underscores. Both were caught in review before running plan.
@@ -192,6 +193,31 @@ What broke:
 
 Cost: $0. Runners are free for public repos, and federated credentials and role assignments aren't billed. Nothing in the main stack was deployed.
 
+### CD: apply and destroy from GitHub
+Two manual workflows run from the Actions tab (**Run workflow**, `main` branch):
+
+- **terraform-apply** (`.github/workflows/terraform-apply.yml`): `init` → `plan` saved to a file (`tfplan`) → `apply` that saved plan.
+- **terraform-destroy** (`.github/workflows/terraform-destroy.yml`): `init` → `plan -destroy` saved to `tfplan` → `apply` that saved plan.
+
+Both log in with OIDC through the main-branch federated credential. OIDC is the login, the service principal is the identity, and its Contributor role on `rg-networking-dev-southcentralus` decides what it can touch. The resource group is managed in `bootstrap/` and only looked up here, which is why the plan shows 17 resources, not 18.
+
+Saving the plan to a file and applying that file means the apply does exactly what the plan showed, and the full plan stays in the run log. The `-destroy` flag on the plan step is what makes a run tear down instead of build; the apply step just carries out the saved plan.
+
+Nothing deploys automatically. A pull request only runs the CI check; deploying is a button on `main`.
+
+Verified (Nov 16):
+- terraform-apply: `Apply complete! Resources: 17 added, 0 changed, 0 destroyed.` (2m 53s)
+- `terraform state list` on my laptop showed the same resources (17, plus the resource group lookup), so the laptop and the pipeline share one remote state.
+- terraform-destroy: `Apply complete! Resources: 0 added, 0 changed, 17 destroyed.`
+- `terraform state list` came back empty afterward.
+- The PR check runs on `actions/checkout@v5` and `hashicorp/setup-terraform@v4` (Node 24), replacing versions that raised a Node 20 deprecation warning.
+
+What broke:
+- My first destroy workflow was a copy of the apply workflow with only the name changed. Running it would have built the stack instead of tearing it down. Fix: `terraform plan -destroy`. Caught in review before it was committed.
+- Review also caught secret names written as `secrets.ARM_*` instead of `secrets.AZURE_*`, and `env:` and `jobs:` indented under `permissions:`.
+
+Cost: the stack was up about 15 minutes, pennies. The VPN gateway and firewall stay off by default.
+
 ## File layout
 - `main.tf`: resource group lookup (data source); the resource group itself is created in `bootstrap/`
 - `vnet.tf`: the VNet list and studio address prefixes (`locals`) and the module call
@@ -203,6 +229,7 @@ Cost: $0. Runners are free for public repos, and federated credentials and role 
 - `modules/network/`: the module (variables, VNet and subnet resources, outputs)
 - `bootstrap/`: the separate stack, applied by hand and never destroyed: remote-state storage, the resource group, the pipeline identity with its role assignments, and my user's state access
 - `.github/workflows/terraform.yml`: the pull request check workflow
+- `.github/workflows/terraform-apply.yml` and `terraform-destroy.yml`: manual deploy and teardown from `main`
 - `outputs.tf`, `variables.tf`, `providers.tf`, `versions.tf`
 
 Terraform merges every .tf file in a folder. File placement is for readability and doesn't change the build order.
@@ -230,6 +257,8 @@ Prerequisites: Terraform (from HashiCorp's website), Azure CLI, an active Azure 
 7. `terraform state list`: must come back empty after destroy.
 
 No portal steps are required.
+
+**From GitHub instead of the terminal** (after bootstrap): Actions tab → **terraform-apply** → **Run workflow** on `main`. To tear down: **terraform-destroy** → **Run workflow**. Then run `terraform state list` locally; it must come back empty.
 
 ## What I'd change at scale
 
