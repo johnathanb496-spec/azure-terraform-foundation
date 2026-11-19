@@ -35,6 +35,7 @@ resource "azurerm_role_definition" "pipeline_deployer" {
       "Microsoft.Network/privateDnsZones/SOA/read",            # provider reads SOA record for private DNS zone
       "Microsoft.Network/virtualNetworks/peer/action",         # needed to peer virtual networks
       "Microsoft.Storage/storageAccounts/blobServices/read",   # needed to read blob service settings after creating the account
+      "Microsoft.Network/networkSecurityGroups/join/action",   # needed to join network security groups to subnets
     ]
     
     not_actions = []
