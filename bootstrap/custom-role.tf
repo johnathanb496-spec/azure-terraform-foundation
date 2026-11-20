@@ -4,7 +4,7 @@ resource "azurerm_role_definition" "pipeline_deployer" {
   description = "Least-privilege role for the azure-terraform-foundation pipeline. Built from 403s."
 
   permissions {
-      actions = [
+    actions = [
       # Resource group: look up the lab RG (it's created in bootstrap, not by the pipeline)
       "Microsoft.Resources/subscriptions/resourceGroups/read",
 
@@ -15,10 +15,11 @@ resource "azurerm_role_definition" "pipeline_deployer" {
       "Microsoft.Network/virtualNetworks/join/action",         # 403: DNS zone link attaches to a VNet
       "Microsoft.Network/virtualNetworks/peer/action",         # 403: peering needs permission on the remote VNet
 
-      # Subnets
+      # Subnets: create/read/delete, plus attach to them
       "Microsoft.Network/virtualNetworks/subnets/read",
       "Microsoft.Network/virtualNetworks/subnets/write",
       "Microsoft.Network/virtualNetworks/subnets/delete",
+      "Microsoft.Network/virtualNetworks/subnets/join/action", # 403: private endpoint attaches to a subnet
 
       # VNet peerings
       "Microsoft.Network/virtualNetworks/virtualNetworkPeerings/read",
@@ -54,6 +55,11 @@ resource "azurerm_role_definition" "pipeline_deployer" {
       "Microsoft.Storage/storageAccounts/listKeys/action",     # 403: provider fetches the key to check blob service (replace later with storage_use_azuread)
       "Microsoft.Storage/storageAccounts/blobServices/read",   # 403: provider checks the blob service is ready
       "Microsoft.Storage/storageAccounts/fileServices/read",   # 403: provider checks the file service is ready
+
+      # Blob containers (403 on read showed this type was missing from the seed; added full read/write/delete)
+      "Microsoft.Storage/storageAccounts/blobServices/containers/read",
+      "Microsoft.Storage/storageAccounts/blobServices/containers/write",
+      "Microsoft.Storage/storageAccounts/blobServices/containers/delete",
     ]
     not_actions = []
   }
