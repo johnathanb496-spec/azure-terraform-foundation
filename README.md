@@ -35,9 +35,9 @@ This is a hypothetical scenario. No real student data is in this repo.
 - **Pipeline identity for CI/CD:** an identity in Entra ID that GitHub Actions logs in as, using short-lived OIDC tokens instead of a stored password, with access to one resource group only. It lives in `bootstrap/` along with the resource group itself.
 - **CI: pull request checks (GitHub Actions):** every pull request into `main` runs fmt, init, validate, and plan, logged in as the pipeline identity with no password. Green on its first real PR (Nov 13).
 - **CD: apply and destroy from GitHub (GitHub Actions):** two manual workflows on `main` build the full stack and tear it down, logged in as the same pipeline identity. Applied 17 and destroyed 17 on their first runs (Nov 16).
+- **Custom role for the pipeline (least privilege):** Contributor is gone. The pipeline runs on a custom role with 41 explicit actions, built by reading the 403 errors from the apply workflow. The full stack applies and destroys from GitHub with only this role (Nov 23).
 
 ## Roadmap (planned, not built yet)
-- **Custom role for the pipeline:** replace Contributor on the resource group with a custom role that allows only the actions this stack needs, found by reading the 403 errors from the apply workflow.
 - **Monitoring:** access logs from the records storage go to Log Analytics, with a query that shows who touched student records.
 - **Site-to-site VPN for the two studios:** a VPN gateway in the hub, one connection per studio.
 - **Azure Firewall Basic with route tables:** studio traffic to student records is forced through one rule set and one log before it reaches the records spoke.
@@ -149,7 +149,7 @@ Cost: an empty Standard/LRS account costs pennies per session.
 
 - **App registration and service principal:** the identity itself, in Entra ID. Roles are assigned to the service principal, not the app registration.
 - **Two federated credentials:** trust rules that accept GitHub's token only for this repo, one for pull requests and one for the main branch. Login uses OIDC: GitHub issues a short-lived signed token, so no password or client secret is stored anywhere. The subjects use GitHub's ID-based format (`repo:<owner>@<owner-id>/<repo>@<repo-id>:...`), so a renamed or re-created repo with the same name can't match.
-- **Pipeline role assignments:** Contributor on `rg-networking-dev-southcentralus` only, and Storage Blob Data Contributor on the remote-state storage account.
+- **Pipeline role assignments:** a custom role (`tf-pipeline-deployer`) on `rg-networking-dev-southcentralus` only (see [Custom role for the pipeline](#custom-role-for-the-pipeline-least-privilege)), and Storage Blob Data Contributor on the remote-state storage account. Until Nov 17 this was Contributor on the resource group.
 - **My user's state access:** Storage Blob Data Contributor on the remote-state storage account for whoever runs bootstrap (`data.azurerm_client_config.current`). The backend uses Entra auth, and Owner alone doesn't include reading blob data.
 - **Resource group moved to bootstrap:** the main stack now reads it with a data source (`data.azurerm_resource_group.lab`) instead of creating it.
 - **Provider registration off in the main stack:** `resource_provider_registrations = "none"`, because an identity scoped to one resource group can't register resource providers across the subscription.
@@ -161,7 +161,7 @@ Cost: an empty Standard/LRS account costs pennies per session.
 The client ID, tenant ID, and subscription ID are stored as GitHub repository secrets, never in code. They're secrets rather than plain variables because this repo is public, and secrets are masked in workflow logs.
 
 Verified:
-- Bootstrap applied 7 resources (Nov 12). The resource group shows Succeeded, and Contributor is assigned on it.
+- Bootstrap applied 7 resources (Nov 12). The resource group shows Succeeded, and Contributor was assigned on it (replaced by the custom role on Nov 17).
 - The main stack plans 17 resources while reading the resource group through the data source.
 
 Verified (Nov 13):
@@ -178,7 +178,7 @@ What broke:
 Cost: $0. App registrations, service principals, role assignments, and an empty resource group are free.
 
 ### CI: pull request checks (GitHub Actions + OIDC)
-`.github/workflows/terraform.yml` runs on every pull request into `main`: `terraform fmt -check`, `init`, `validate`, and `plan`, on a GitHub-hosted runner. The runner logs into Azure with OIDC, so there is no client secret anywhere. The pipeline identity can only touch one resource group (Contributor) and the state storage (Storage Blob Data Contributor).
+`.github/workflows/terraform.yml` runs on every pull request into `main`: `terraform fmt -check`, `init`, `validate`, and `plan`, on a GitHub-hosted runner. The runner logs into Azure with OIDC, so there is no client secret anywhere. The pipeline identity can only touch one resource group (custom role) and the state storage (Storage Blob Data Contributor).
 
 **How to use:** open a PR. The check runs automatically, and the plan output is in the job log. Nothing deploys from a PR. CI only checks the main stack; changes in `bootstrap/` are planned and applied locally.
 
@@ -199,13 +199,13 @@ Two manual workflows run from the Actions tab (**Run workflow**, `main` branch):
 - **terraform-apply** (`.github/workflows/terraform-apply.yml`): `init` → `plan` saved to a file (`tfplan`) → `apply` that saved plan.
 - **terraform-destroy** (`.github/workflows/terraform-destroy.yml`): `init` → `plan -destroy` saved to `tfplan` → `apply` that saved plan.
 
-Both log in with OIDC through the main-branch federated credential. OIDC is the login, the service principal is the identity, and its Contributor role on `rg-networking-dev-southcentralus` decides what it can touch. The resource group is managed in `bootstrap/` and only looked up here, which is why the plan shows 17 resources, not 18.
+Both log in with OIDC through the main-branch federated credential. OIDC is the login, the service principal is the identity, and its custom role on `rg-networking-dev-southcentralus` decides what it can touch. The resource group is managed in `bootstrap/` and only looked up here, which is why the plan shows 17 resources, not 18.
 
 Saving the plan to a file and applying that file means the apply does exactly what the plan showed, and the full plan stays in the run log. The `-destroy` flag on the plan step is what makes a run tear down instead of build; the apply step just carries out the saved plan.
 
 Nothing deploys automatically. A pull request only runs the CI check; deploying is a button on `main`.
 
-Verified (Nov 16):
+Verified (Nov 16, still on Contributor):
 - terraform-apply: `Apply complete! Resources: 17 added, 0 changed, 0 destroyed.` (2m 53s)
 - `terraform state list` on my laptop showed the same resources (17, plus the resource group lookup), so the laptop and the pipeline share one remote state.
 - terraform-destroy: `Apply complete! Resources: 0 added, 0 changed, 17 destroyed.`
@@ -218,6 +218,53 @@ What broke:
 
 Cost: the stack was up about 15 minutes, pennies. The VPN gateway and firewall stay off by default.
 
+### Custom role for the pipeline (least privilege)
+`bootstrap/custom-role.tf` replaces Contributor on the resource group with a custom role and gives it to the pipeline.
+
+- **Role definition** (`azurerm_role_definition.pipeline_deployer`): what the role allows. Named `tf-pipeline-deployer`, 41 explicit actions, no wildcards, and assignable only on `rg-networking-dev-southcentralus`.
+- **Role assignment** (`azurerm_role_assignment.pipeline_deployer`): who gets it and where. The pipeline's service principal, on that one resource group.
+
+The definition is what, the assignment is who and where. Permissions add up: while Contributor was still assigned, the custom role changed nothing, so Contributor came off in the same apply that added the custom role.
+
+**How the list was built:** I started with read, write, and delete for each resource type the stack creates (25 actions), removed Contributor, and ran the apply workflow. Each failed run ended in a 403 that named the missing action. I added it in `bootstrap/`, applied bootstrap locally, waited about 10 minutes for Azure to pick up the change, and ran the workflow again. Eight failed runs named 11 actions. I added 4 more to complete read/write/delete for two resource types the seed list missed (blob containers and private DNS zone groups), and predicted 1 (`privateDnsZones/join/action`) from the pattern instead of waiting for its 403. Each action in the file has a comment saying why it's there.
+
+The pattern: anything that attaches to something else needs permission on the thing it attaches to.
+
+| Attaching | Needs |
+|---|---|
+| NSG → records subnet | `networkSecurityGroups/join/action` |
+| DNS zone link → VNet | `virtualNetworks/join/action` |
+| Private endpoint → subnet | `virtualNetworks/subnets/join/action` |
+| Private endpoint → storage account | `storageAccounts/PrivateEndpointConnectionsApproval/action` |
+| Private endpoint → DNS zone | `privateEndpoints/privateDnsZoneGroups/write`, `privateDnsZones/join/action` |
+| Peering → remote VNet | `virtualNetworks/peer/action` |
+
+The rest came from the azurerm provider checking resources after it creates them (`listKeys`, `blobServices/read`, `fileServices/read`, `privateDnsZones/SOA/read`).
+
+A `LinkedAuthorizationFailed` error means the pipeline was allowed to create the thing but not allowed to touch the thing it links to. A plain `AuthorizationFailed` means the action on the thing itself is missing.
+
+**Why a custom role instead of Contributor?** Contributor can create anything in the resource group, including a $140/month VPN gateway. The custom role can only do what this stack does. The tradeoff is upkeep: every new resource type (gateway, firewall, route tables) needs another round of 403s.
+
+**Why explicit actions instead of wildcards?** Wildcards like `Microsoft.Network/*` would have skipped every 403, but they also grant actions Azure adds later, and nobody can read the list and say exactly what the pipeline is allowed to do.
+
+The workflow never reads `custom-role.tf`. The pipeline's permissions come from the role in Azure, and the role only changes when I apply bootstrap locally. Merging the file is for the record, not for the permissions.
+
+Verified (Nov 23):
+- Azure shows 41 actions on the role (`az role definition list`).
+- terraform-apply run #10: green in 2m 2s, the full main stack built with only the custom role.
+- terraform-destroy: green, the full main stack destroyed with only the custom role.
+- `terraform state list` in the main stack came back empty afterward.
+
+Not verified yet:
+- Whether `privateDnsZones/join/action` is really needed. It was added before a 403 asked for it.
+
+What broke:
+- I edited the role file but never applied bootstrap, then ran the workflow twice and got the same 403 both times. Fix: no workflow run until I've seen bootstrap's `Apply complete! Resources: 0 added, 1 changed, 0 destroyed.`
+- I replaced the whole file with a snippet that only had the role definition, so the plan wanted to destroy the role assignment, which would have cut off the pipeline. I caught it before apply. `Select-String` missed the word "destroyed" because of color codes in the output. Fix: every bootstrap plan must show 0 to destroy, and I check it with `terraform plan -no-color`.
+- Pasting a new action over an existing line silently deleted `networkSecurityGroups/join/action`, and the next run failed on it again. Fix: `git diff` before every bootstrap plan.
+
+Cost: role definitions and assignments are free. Each failed run left part of the stack deployed until the destroy, which cost pennies.
+
 ## File layout
 - `main.tf`: resource group lookup (data source); the resource group itself is created in `bootstrap/`
 - `vnet.tf`: the VNet list and studio address prefixes (`locals`) and the module call
@@ -227,7 +274,7 @@ Cost: the stack was up about 15 minutes, pennies. The VPN gateway and firewall s
 - `private-endpoint.tf`: records private endpoint, blob private DNS zone, and its VNet links
 - `videos-storage.tf`: videos storage account and its private container
 - `modules/network/`: the module (variables, VNet and subnet resources, outputs)
-- `bootstrap/`: the separate stack, applied by hand and never destroyed: remote-state storage, the resource group, the pipeline identity with its role assignments, and my user's state access
+- `bootstrap/`: the separate stack, applied by hand and never destroyed: remote-state storage, the resource group, the pipeline identity with its role assignments, the pipeline's custom role (`custom-role.tf`), and my user's state access
 - `.github/workflows/terraform.yml`: the pull request check workflow
 - `.github/workflows/terraform-apply.yml` and `terraform-destroy.yml`: manual deploy and teardown from `main`
 - `outputs.tf`, `variables.tf`, `providers.tf`, `versions.tf`
@@ -248,7 +295,7 @@ Later: route tables will use these IDs. The peerings and the private endpoint re
 
 Prerequisites: Terraform (from HashiCorp's website), Azure CLI, an active Azure subscription. Run `az login` once before starting.
 
-1. **Bootstrap first (once):** `cd bootstrap`, then `terraform init` and `terraform apply`. This creates the remote-state storage, the resource group, the pipeline identity, and your own Storage Blob Data Contributor role on the state account. Bootstrap keeps local state (ignored by git) and is never destroyed. Then `cd ..` for the main stack.
+1. **Bootstrap first (once):** `cd bootstrap`, then `terraform init` and `terraform apply`. This creates the remote-state storage, the resource group, the pipeline identity with its custom role, and your own Storage Blob Data Contributor role on the state account. Bootstrap keeps local state (ignored by git) and is never destroyed. Then `cd ..` for the main stack.
 2. `terraform init`: downloads the Azure provider and the module, and connects to remote state using your Entra login (not the storage key). Run once after cloning. If the backend block changes, run `terraform init -reconfigure`. A new role can take a few minutes to take effect, so a 403 right after bootstrap usually means wait and retry.
 3. `terraform validate`: checks the configuration for syntax and internal errors. It doesn't contact Azure.
 4. `terraform plan`: shows what Terraform will create, change, or destroy, without touching anything. Currently expect 17 to add: 2 VNets, 4 subnets, 2 peerings, the NSG, its subnet association, the records storage account, the private endpoint, the private DNS zone, 2 DNS VNet links, and the videos storage account and its container. The resource group isn't in the count because bootstrap creates it.
@@ -260,8 +307,12 @@ No portal steps are required.
 
 **From GitHub instead of the terminal** (after bootstrap): Actions tab → **terraform-apply** → **Run workflow** on `main`. To tear down: **terraform-destroy** → **Run workflow**. Then run `terraform state list` locally; it must come back empty.
 
+**Changing the pipeline's permissions:** edit `bootstrap/custom-role.tf`, run `terraform plan` in `bootstrap/` (it must show 0 to destroy), `terraform apply`, wait about 10 minutes, then run the workflow.
+
 ## What I'd change at scale
 
 - **Student sign-in with MFA:** Left out because it's application-layer authentication. It belongs to the student portal, not to the infrastructure or the CI/CD pipeline. It comes in when the portal gets built.
 - **Azure Firewall Premium:** The design uses Firewall Basic, which filters and logs traffic but doesn't inspect inside encrypted connections. Premium adds intrusion detection and TLS inspection at roughly $1,278/month. It comes in if an audit or contract requires inspecting encrypted traffic.
 - **Multiple environments (dev, staging, prod):** Left out because a second copy doubles the infrastructure to run and maintain. It comes in once real students depend on the system and a broken change would cost the school. The network module is built to be called more than once, so the same code can deploy each environment with different variable values.
+- **Pipeline permissions:** I built the custom role from 403s to learn exactly what Terraform touches. At scale, I'd give each environment its own pipeline identity, use narrower built-in roles (such as Network Contributor and Storage Account Contributor) on that environment's resource groups, and use Azure Policy to block what no pipeline should do. The pull request check would get a read-only identity, since it only plans. A hand-built custom role costs a round of 403s for every new resource type, and that upkeep grows with the team.
+- **Folder layout:** This repo keeps the module and the stacks together. At scale, modules would live in their own repo with version tags, and the deployed stacks would live in a separate repo, one folder and one state file per layer: bootstrap (identity and state), then platform (hub network, firewall, VPN), then workloads (each app's storage and endpoints). A change to one layer can't accidentally plan a change to another.
