@@ -47,6 +47,7 @@ resource "azurerm_role_definition" "pipeline_deployer" {
       "Microsoft.Network/privateEndpoints/read",
       "Microsoft.Network/privateEndpoints/write",
       "Microsoft.Network/privateEndpoints/delete",
+      "Microsoft.Storage/storageAccounts/PrivateEndpointConnectionsApproval/action",
 
       # Storage accounts: create/read/delete, plus the provider's readiness checks after creating one
       "Microsoft.Storage/storageAccounts/read",
@@ -60,6 +61,8 @@ resource "azurerm_role_definition" "pipeline_deployer" {
       "Microsoft.Storage/storageAccounts/blobServices/containers/read",
       "Microsoft.Storage/storageAccounts/blobServices/containers/write",
       "Microsoft.Storage/storageAccounts/blobServices/containers/delete",
+
+    
     ]
     not_actions = []
   }
