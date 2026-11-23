@@ -62,6 +62,12 @@ resource "azurerm_role_definition" "pipeline_deployer" {
       "Microsoft.Storage/storageAccounts/blobServices/containers/write",
       "Microsoft.Storage/storageAccounts/blobServices/containers/delete",
 
+      # Private DNS zone groups for private endpoints
+      "Microsoft.Network/privateEndpoints/privateDnsZoneGroups/read",
+      "Microsoft.Network/privateEndpoints/privateDnsZoneGroups/write",
+      "Microsoft.Network/privateEndpoints/privateDnsZoneGroups/delete",
+      "Microsoft.Network/privateDnsZones/join/action", # predicted: join pattern, endpoint attaches to DNS zone
+
     
     ]
     not_actions = []
